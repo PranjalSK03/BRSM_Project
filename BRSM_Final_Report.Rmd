@@ -13,6 +13,12 @@ output:
   pdf_document:
     toc: false
     number_sections: true
+geometry: "top=0.7in, bottom=0.7in, left=0.7in, right=0.7in"
+header-includes:
+  - \usepackage{titlesec}
+  - \titlespacing{\section}{0pt}{8pt plus 2pt minus 2pt}{4pt plus 2pt minus 2pt}
+  - \titlespacing{\subsection}{0pt}{6pt plus 2pt minus 2pt}{3pt plus 2pt minus 2pt}
+  - \titlespacing{\subsubsection}{0pt}{4pt plus 2pt minus 2pt}{2pt plus 2pt minus 2pt}
 ---
 
 ```{r setup, include=FALSE}
@@ -56,13 +62,35 @@ read_participant <- function(f) {
 
 raw_list <- map(csv_files, read_participant)
 raw_df   <- bind_rows(raw_list)
+
+# Calculate and apply encoding time exclusion
+encoding_times <- raw_df %>%
+  filter(!is.na(participant_id)) %>%
+  group_by(participant_id) %>%
+  summarise(
+    instruction_stopped = suppressWarnings(as.numeric(first(na.omit(`instruction_2.stopped`)))),
+    recognition_started = suppressWarnings(as.numeric(first(na.omit(`recognition.started`)))),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    encoding_time_sec = recognition_started - instruction_stopped,
+    encoding_time_min = encoding_time_sec / 60
+  )
+
+encoding_threshold_min <- 27.05
+encoding_excluded_ids <- encoding_times %>%
+  filter(!is.na(encoding_time_min), encoding_time_min > encoding_threshold_min) %>%
+  pull(participant_id)
+
+n_encoding_excluded <- length(encoding_excluded_ids)
+n_total_loaded <- n_distinct(raw_df$participant_id)
+n_after_encoding <- n_total_loaded - n_encoding_excluded
+
+# Apply encoding time exclusion
+raw_df <- raw_df %>% filter(!participant_id %in% encoding_excluded_ids)
 ```
 
----
-
 **GitHub Repository:** [https://github.com/PranjalSK03/BRSM_Project](https://github.com/PranjalSK03/BRSM_Project)
-
----
 
 # Introduction
 
@@ -81,8 +109,6 @@ The **Boundary Advantage Effect** (Swallow et al., 2009) demonstrates superior m
 ### Predictions for Video Memory
 
 If natural event boundaries enhance memory encoding, then disrupting these boundaries should impair recognition memory. Our experiment manipulates whether participants see complete events (ending at natural boundaries) or truncated events (ending abruptly before boundaries). We predict that truncation will prevent the normal boundary-related memory enhancement, leading to worse recognition for frames from truncated videos. Moreover, the effect should be especially strong for frames that would have appeared near the (now absent) boundary.
-
----
 
 # Experimental Design and Hypotheses
 
@@ -110,8 +136,6 @@ This within-subjects manipulation allowed us to test whether boundary effects ar
 
 **Hypothesis 3 (Null Effect on EM Frames):** NB and AB conditions will not differ significantly on EM frame accuracy. Rationale: Frames from event middles are temporally distant from the disrupted boundary and should be minimally affected by the manipulation.
 
----
-
 # Data and Data Cleaning
 
 ```{r participant-exclusion-early, include=FALSE}
@@ -122,9 +146,8 @@ trial_counts <- raw_df %>%
   summarise(n_rows = n(), .groups = "drop")
 
 excluded_ids <- trial_counts %>% filter(n_rows < 20) %>% pull(participant_id)
-n_total      <- n_distinct(raw_df$participant_id)
 n_excluded   <- length(excluded_ids)
-n_included   <- n_total - n_excluded
+n_included   <- n_after_encoding - n_excluded
 
 clean_df <- raw_df %>% filter(!participant_id %in% excluded_ids)
 
@@ -190,9 +213,7 @@ participant_demo <- participant_level %>%
 
 Dataset: **`r n_included` participants** × 40 trials = `r n_included * 40` observations. Key variables: participant_id, Condition (NB/AB), FrameType (BB/EM), Accuracy (0/1), RT (seconds), Confidence (1-5).
 
-**Cleaning steps:** (1) Excluded N=`r n_excluded` participants with <20 trials; (2) Converted variables to numeric; (3) Classified frames as BB/EM from filenames; (4) Removed RT outliers (cutoff = Mean + 3SD = `r round(rt_cutoff, 2)`s); (5) Listwise deletion on critical variables; (6) Aggregated to participant level (N=`r nrow(participant_level)`) for statistical independence.
-
----
+**Cleaning steps:** (1) Excluded N=`r n_encoding_excluded` participants with encoding time > 27.05 min; (2) Excluded N=`r n_excluded` participants with <20 trials; (3) Converted variables to numeric; (4) Classified frames as BB/EM from filenames; (5) Removed RT outliers (cutoff = Mean + 3SD = `r round(rt_cutoff, 2)`s); (6) Listwise deletion on critical variables; (7) Aggregated to participant level (N=`r nrow(participant_level)`) for statistical independence.
 
 # Variables and Descriptive Analysis
 
@@ -227,7 +248,91 @@ Trials with RT > Mean + 3SD were excluded as outliers. Data were aggregated to t
 
 ## Demographic Summary Statistics
 
-## Sample Characteristics and Descriptive Statistics
+### Age Distribution
+
+```{r age-detailed-stats}
+age_stats <- demo_complete %>%
+  summarise(
+    N                = n(),
+    Mean             = mean(Age),
+    Median           = median(Age),
+    `Std Dev`        = sd(Age),
+    Minimum          = min(Age),
+    Maximum          = max(Age),
+    Q1               = quantile(Age, 0.25),
+    Q3               = quantile(Age, 0.75),
+    IQR              = IQR(Age)
+  )
+
+age_stats %>%
+  pivot_longer(everything(), names_to = "Statistic", values_to = "Value") %>%
+  mutate(Value = round(Value, 2)) %>%
+  knitr::kable(caption = "Age Distribution Statistics")
+```
+
+Sample: Young adults (M = `r round(mean(demo_complete$Age), 1)` years, SD = `r round(sd(demo_complete$Age), 1)`, range = `r min(demo_complete$Age)`-`r max(demo_complete$Age)` years). Distribution is approximately normal with 50% of participants between `r quantile(demo_complete$Age, 0.25)` and `r quantile(demo_complete$Age, 0.75)` years.
+
+```{r age-by-condition-stats}
+demo_complete %>%
+  group_by(Condition) %>%
+  summarise(
+    N = n(),
+    `Mean Age` = round(mean(Age), 1),
+    `SD Age` = round(sd(Age), 1),
+    `Min` = min(Age),
+    `Max` = max(Age),
+    .groups = "drop"
+  ) %>%
+  knitr::kable(caption = "Age by Condition")
+```
+
+Age distributions are similar across conditions, supporting successful randomization.
+
+### Gender Distribution
+
+```{r gender-detailed-stats}
+gender_freq <- demo_complete %>%
+  count(Gender, name = "Frequency") %>%
+  mutate(Percentage = round((Frequency / sum(Frequency)) * 100, 1)) %>%
+  arrange(desc(Frequency))
+
+knitr::kable(gender_freq, caption = "Gender Distribution")
+```
+
+Sample composition: `r round((sum(demo_complete$Gender == "Male") / nrow(demo_complete)) * 100, 1)`% male, `r round((sum(demo_complete$Gender == "Female") / nrow(demo_complete)) * 100, 1)`% female.
+
+```{r gender-by-condition-stats}
+gender_cond_table <- table(demo_complete$Gender, demo_complete$Condition)
+gender_cond_df <- as.data.frame.matrix(gender_cond_table) %>%
+  rownames_to_column("Gender") %>%
+  mutate(Total = NB + AB)
+
+knitr::kable(gender_cond_df, caption = "Gender by Condition")
+```
+
+Gender is balanced across conditions (no significant difference, see Test D2).
+
+### Handedness and Vision
+
+```{r handedness-vision-stats}
+handedness_freq <- demo_complete %>%
+  count(Handedness, name = "Count") %>%
+  mutate(Percentage = round((Count / sum(Count)) * 100, 1))
+
+vision_freq <- demo_complete %>%
+  count(Vision, name = "Count") %>%
+  mutate(Percentage = round((Count / sum(Count)) * 100, 1))
+
+knitr::kable(handedness_freq, caption = "Handedness Distribution")
+```
+
+**Handedness:** Approximately `r round((sum(demo_complete$Handedness == "Right handed", na.rm=TRUE) / nrow(demo_complete)) * 100, 1)`% right-handed, consistent with population norms (85-90%).
+
+```{r vision-stats-table}
+knitr::kable(vision_freq, caption = "Vision Distribution")
+```
+
+**Vision:** Most participants (`r round(sum(demo_complete$Vision %in% c("Normal", "Corrected to normal")) / nrow(demo_complete) * 100, 1)`%) have normal or corrected-to-normal vision, ensuring adequate perception of visual stimuli.
 
 ```{r shared-theme, include=FALSE}
 brsm_theme <- theme_classic() +
@@ -244,59 +349,231 @@ condition_colours <- c("NB" = "#2196F3", "AB" = "#F44336")
 frametype_colours <- c("BB" = "#4CAF50", "EM" = "#FF9800")
 ```
 
-```{r demo-summary-detailed}
-demo_summary <- demo_complete %>%
+## Demographic Exploratory Data Analysis
+
+### Figure 5A - Age Distribution by Condition
+
+```{r fig-5a, fig.height=1.6, fig.cap="Age Distribution by Condition. Each bar represents number of participants of that age."}
+p5a <- ggplot(demo_complete, aes(x = Age, fill = Condition)) +
+  geom_histogram(binwidth = 1, position = "dodge", alpha = 0.7, colour = "white") +
+  scale_fill_manual(values = condition_colours) +
+  scale_x_continuous(breaks = seq(18, 36, 2)) +
+  labs(x = "Age (years)", y = "Number of Participants", fill = "Condition") +
+  brsm_theme
+print(p5a)
+```
+
+**Interpretation:** Both conditions share a similar age distribution (19-26 years). No visible age imbalance.
+
+### Figure 5B - Age Boxplot: NB vs AB
+
+```{r fig-5b, fig.height=1.6, fig.cap="Age by Condition (Boxplot). Median, IQR, and individual participants shown."}
+p5b <- ggplot(demo_complete, aes(x = Condition, y = Age, fill = Condition)) +
+  geom_boxplot(width = 0.45, outlier.shape = NA, alpha = 0.7, linewidth = 0.8) +
+  geom_jitter(aes(colour = Condition), width = 0.12, alpha = 0.45, size = 1.8) +
+  scale_fill_manual(values = condition_colours) +
+  scale_colour_manual(values = condition_colours) +
+  scale_y_continuous(breaks = seq(18, 36, 2)) +
+  labs(x = "Condition", y = "Age (years)") +
+  brsm_theme + theme(legend.position = "none")
+print(p5b)
+```
+
+**Interpretation:** Median age is virtually identical across NB and AB (both approximately 22 years).
+
+### Figure 5C - Gender Breakdown (Overall)
+
+```{r fig-5c, fig.height=1.6, fig.cap="Gender Breakdown of Participants. Full sample with complete demographic records."}
+gender_counts <- demo_complete %>% count(Gender) %>% mutate(pct = n / sum(n))
+
+p5c <- ggplot(gender_counts, aes(x = reorder(Gender, -n), y = n, fill = Gender)) +
+  geom_col(width = 0.55, alpha = 0.85) +
+  geom_text(aes(label = sprintf("%d\n(%.0f%%)", n, pct * 100)), vjust = -0.4, size = 4.2, fontface = "bold") +
+  scale_fill_manual(values = c("Female" = "#E91E63", "Male" = "#1565C0")) +
+  scale_y_continuous(limits = c(0, max(gender_counts$n) * 1.2)) +
+  labs(x = "Gender", y = "Number of Participants") +
+  brsm_theme + theme(legend.position = "none")
+print(p5c)
+```
+
+**Interpretation:** Sample is predominantly male (113 vs 50 female). Typical of convenience samples from certain university departments.
+
+### Figure 5D - Gender by Condition (Stacked Bar)
+
+```{r fig-5d, fig.height=1.6, fig.cap="Gender Composition by Condition. Proportional stacked bars with counts and percentages."}
+gender_cond <- demo_complete %>%
+  count(Condition, Gender) %>%
+  group_by(Condition) %>% mutate(pct = n / sum(n)) %>% ungroup()
+
+p5d <- ggplot(gender_cond, aes(x = Condition, y = pct, fill = Gender)) +
+  geom_col(position = "stack", width = 0.55, alpha = 0.85) +
+  geom_text(aes(label = sprintf("%d\n(%.0f%%)", n, pct * 100)),
+            position = position_stack(vjust = 0.5), size = 3.8, fontface = "bold", colour = "white") +
+  scale_fill_manual(values = c("Female" = "#E91E63", "Male" = "#1565C0")) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Condition", y = "Proportion of Participants", fill = "Gender") +
+  brsm_theme
+print(p5d)
+```
+
+**Interpretation:** Gender ratio is similar across both conditions (NB ~29% female; AB ~33% female).
+
+### Figure 5E - Handedness Distribution
+
+```{r fig-5e, fig.height=1.6, fig.cap="Handedness Distribution. Proportion of right-handed vs left-handed participants."}
+handedness_counts <- demo_complete %>% 
+  count(Handedness) %>% 
+  mutate(pct = n / sum(n))
+
+p5e <- ggplot(handedness_counts, aes(x = reorder(Handedness, -n), y = n, fill = Handedness)) +
+  geom_col(width = 0.55, alpha = 0.85) +
+  geom_text(aes(label = sprintf("%d\n(%.1f%%)", n, pct * 100)), 
+            vjust = -0.4, size = 4.2, fontface = "bold") +
+  scale_fill_manual(values = c("Right handed" = "#4CAF50", "Left Handed" = "#FF9800")) +
+  scale_y_continuous(limits = c(0, max(handedness_counts$n) * 1.2)) +
+  labs(x = "Handedness", y = "Number of Participants") +
+  brsm_theme + theme(legend.position = "none")
+print(p5e)
+```
+
+**Interpretation:** Right-handed dominance (~90%) matches general population norms.
+
+### Figure 5F - Vision Status Distribution
+
+```{r fig-5f, fig.height=1.6, fig.cap="Vision Status Distribution. Visual acuity categories across all participants."}
+vision_counts <- demo_complete %>% 
+  count(Vision) %>% 
+  mutate(pct = n / sum(n))
+
+p5f <- ggplot(vision_counts, aes(x = reorder(Vision, -n), y = n, fill = Vision)) +
+  geom_col(width = 0.65, alpha = 0.85) +
+  geom_text(aes(label = sprintf("%d\n(%.1f%%)", n, pct * 100)), 
+            vjust = -0.4, size = 4, fontface = "bold") +
+  scale_fill_manual(values = c("Normal" = "#2196F3", 
+                                "Corrected to normal" = "#4CAF50",
+                                "Uncorrected vision difficulty" = "#F44336")) +
+  scale_y_continuous(limits = c(0, max(vision_counts$n) * 1.2)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 15)) +
+  labs(x = "Vision Status", y = "Number of Participants") +
+  brsm_theme + theme(legend.position = "none")
+print(p5f)
+```
+
+**Interpretation:** Most participants can adequately perceive visual stimuli. The small proportion with uncorrected vision difficulty is balanced across conditions.
+
+### Figure 5G - Age Distribution (Histogram + Density)
+
+```{r fig-5g, fig.height=1.6, fig.cap="Age Distribution with Density Curve. Histogram overlaid with smooth density curve."}
+p5g <- ggplot(demo_complete, aes(x = Age)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, 
+                 fill = "#2196F3", alpha = 0.6, colour = "white") +
+  geom_density(linewidth = 1.2, colour = "#F44336") +
+  geom_vline(aes(xintercept = mean(Age)), colour = "#FF9800", 
+             linetype = "dashed", linewidth = 1, alpha = 0.7) +
+  geom_vline(aes(xintercept = median(Age)), colour = "#4CAF50", 
+             linetype = "dotted", linewidth = 1, alpha = 0.7) +
+  annotate("text", x = mean(demo_complete$Age) + 1.5, y = 0.15, 
+           label = sprintf("Mean = %.1f", mean(demo_complete$Age)), 
+           colour = "#FF9800", fontface = "bold", size = 3.5) +
+  annotate("text", x = median(demo_complete$Age) - 1.5, y = 0.13, 
+           label = sprintf("Median = %.0f", median(demo_complete$Age)), 
+           colour = "#4CAF50", fontface = "bold", size = 3.5) +
+  scale_x_continuous(breaks = seq(18, 36, 2)) +
+  labs(x = "Age (years)", y = "Density") +
+  brsm_theme
+print(p5g)
+```
+
+**Interpretation:** Age distribution is slightly right-skewed with concentration around 20-23 years. Mean and median are very close, suggesting near-normal distribution.
+
+### Figure 5H - Demographic Summary Heatmap
+
+```{r fig-5h, fig.height=1.6, fig.cap="Demographic Composition Heatmap. Participant count by Condition × Gender × Handedness."}
+# Create a summary matrix for heatmap
+demo_matrix <- demo_complete %>%
+  group_by(Condition, Gender, Handedness) %>%
+  summarise(Count = n(), .groups = "drop")
+
+p5h <- ggplot(demo_matrix, aes(x = paste(Gender, Handedness, sep = "\n"), 
+                                y = Condition, fill = Count)) +
+  geom_tile(colour = "white", linewidth = 1.5) +
+  geom_text(aes(label = Count), size = 6, fontface = "bold", colour = "white") +
+  scale_fill_gradient(low = "#BBDEFB", high = "#0D47A1") +
+  labs(x = "Gender and Handedness", y = "Condition", fill = "Count") +
+  brsm_theme +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+print(p5h)
+```
+
+**Interpretation:** All demographic subgroups are represented in both conditions, with male right-handed participants being the most common category.
+
+## Performance Descriptive Statistics
+
+### Overall Accuracy by Condition
+
+Each row is one experimental condition. Values are computed at the participant level (each participant contributes one mean accuracy score averaged across all their trials). NB = Natural Boundary; AB = Abrupt Boundary. Accuracy is expressed as a proportion (0 = all wrong, 1 = all correct).
+
+```{r desc-overall-detailed}
+participant_level %>%
   group_by(Condition) %>%
   summarise(
-    N = n(),
-    `Mean Age` = round(mean(Age, na.rm = TRUE), 1),
-    `SD Age` = round(sd(Age, na.rm = TRUE), 1),
-    `% Male` = round(100 * mean(Gender == "Male", na.rm = TRUE), 0),
+    `Number of Participants`  = n(),
+    `Mean Accuracy`           = round(mean(mean_accuracy), 3),
+    `Standard Deviation`      = round(sd(mean_accuracy), 3),
+    `Standard Error`          = round(sd(mean_accuracy) / sqrt(n()), 3),
+    `Minimum Accuracy`        = round(min(mean_accuracy), 3),
+    `Maximum Accuracy`        = round(max(mean_accuracy), 3),
     .groups = "drop"
-  )
-
-knitr::kable(demo_summary, caption = "Table 1. Demographics by Condition")
+  ) %>%
+  knitr::kable(caption = "Overall Accuracy by Condition")
 ```
 
-Sample: University students aged 19-28 (M = `r round(mean(demo_complete$Age), 1)`, SD = `r round(sd(demo_complete$Age), 1)`); `r round(100*mean(demo_complete$Gender == "Male"), 0)`% male. Conditions balanced on age and gender (both p > .05).
+**Interpretation:** NB participants (M = `r round(mean(participant_level$mean_accuracy[participant_level$Condition == "NB"]), 3)`) outperformed AB participants (M = `r round(mean(participant_level$mean_accuracy[participant_level$Condition == "AB"]), 3)`) by `r round(100*(mean(participant_level$mean_accuracy[participant_level$Condition == "NB"]) - mean(participant_level$mean_accuracy[participant_level$Condition == "AB"])), 1)` percentage points.
 
-```{r desc-stats-table}
-desc_overall <- participant_level %>%
+### Accuracy by Condition and Frame Type
+
+Each row represents one Condition × Frame Type combination. BB = Before-Boundary frame (a frame adjacent to the event boundary); EM = Event-Middle frame (a frame from the middle of the event, away from the boundary). Accuracy is a proportion (0–1).
+
+```{r desc-frametype-detailed}
+participant_frametype %>%
+  group_by(Condition, `Frame Type` = FrameType) %>%
+  summarise(
+    `Number of Participants` = n(),
+    `Mean Accuracy`          = round(mean(mean_accuracy), 3),
+    `Standard Deviation`     = round(sd(mean_accuracy), 3),
+    `Standard Error`         = round(sd(mean_accuracy) / sqrt(n()), 3),
+    .groups = "drop"
+  ) %>%
+  knitr::kable(caption = "Accuracy by Condition × Frame Type")
+```
+
+**Interpretation:** The NB advantage appears for both BB and EM frames, with a stronger effect for BB (boundary-adjacent frames), consistent with event segmentation theory.
+
+### Reaction Time and Confidence by Condition
+
+Computed at the trial level (all retained trials pooled within each condition). Response Time is in seconds from image onset to key press. Confidence Rating is a 1–5 scale recorded immediately after each recognition response (1 = not at all confident, 5 = completely confident).
+
+```{r desc-rt-confidence}
+trial_df %>%
   group_by(Condition) %>%
   summarise(
-    N = n(),
-    `Mean Accuracy` = round(mean(mean_accuracy), 3),
-    `SD` = round(sd(mean_accuracy), 3),
+    `Number of Trials`            = n(),
+    `Mean Response Time (s)`      = round(mean(RT, na.rm = TRUE), 3),
+    `Std Dev Response Time (s)`   = round(sd(RT,   na.rm = TRUE), 3),
+    `Mean Confidence Rating`      = round(mean(Confidence, na.rm = TRUE), 3),
+    `Std Dev Confidence Rating`   = round(sd(Confidence,   na.rm = TRUE), 3),
     .groups = "drop"
-  )
-
-desc_frametype <- participant_frametype %>%
-  group_by(Condition, FrameType) %>%
-  summarise(
-    N = n(),
-    `Mean Accuracy` = round(mean(mean_accuracy), 3),
-    `SD` = round(sd(mean_accuracy), 3),
-    .groups = "drop"
-  )
-
-knitr::kable(desc_overall, caption = "Table 2. Accuracy by Condition")
+  ) %>%
+  knitr::kable(caption = "Response Time and Confidence by Condition")
 ```
 
-NB: `r round(100*mean(participant_level$mean_accuracy[participant_level$Condition == "NB"]), 1)`% vs AB: `r round(100*mean(participant_level$mean_accuracy[participant_level$Condition == "AB"]), 1)`% (diff = `r round(100*(mean(participant_level$mean_accuracy[participant_level$Condition == "NB"]) - mean(participant_level$mean_accuracy[participant_level$Condition == "AB"])), 1)` points).
-
-```{r desc-frametype-table}
-knitr::kable(desc_frametype, caption = "Table 3. Accuracy by Condition × Frame Type")
-```
-
-NB advantage appears for both BB and EM frames, with stronger effect for BB (boundary-adjacent frames).
-
----
+**Interpretation:** Response times were similar across conditions (NB: M = `r round(mean(trial_df$RT[trial_df$Condition == "NB"], na.rm=TRUE), 2)`s vs AB: M = `r round(mean(trial_df$RT[trial_df$Condition == "AB"], na.rm=TRUE), 2)`s). NB participants showed slightly higher confidence, consistent with their superior accuracy.
 
 # Exploratory Data Analysis
 
 ## Distribution of Accuracy by Condition
 
-```{r fig-violin-condition, fig.height=2.3, fig.cap="Figure 1. Distribution of recognition accuracy by condition. NB participants show consistently higher accuracy."}
+```{r fig-violin-condition, fig.height=2.3, fig.cap="Distribution of recognition accuracy by condition. NB participants show consistently higher accuracy."}
 ggplot(participant_level, aes(x = Condition, y = mean_accuracy, fill = Condition)) +
   geom_violin(alpha = 0.5, trim = FALSE, linewidth = 0.7) +
   geom_boxplot(width = 0.12, outlier.shape = NA, alpha = 0.85) +
@@ -310,9 +587,9 @@ ggplot(participant_level, aes(x = Condition, y = mean_accuracy, fill = Condition
   brsm_theme + theme(legend.position = "none")
 ```
 
-**Figure 1 Interpretation:** NB participants cluster at higher accuracy levels than AB participants. Few NB participants score below 80%, whereas many AB participants fall into the 75-85% range.
+**Interpretation:** NB participants cluster at higher accuracy levels than AB participants. Few NB participants score below 80%, whereas many AB participants fall into the 75-85% range.
 
-```{r fig-density, fig.height=2.2, fig.cap="Figure 2. Density plot. NB (blue) shifted toward higher accuracy than AB (red)."}
+```{r fig-density, fig.height=2.2, fig.cap="Density plot. NB (blue) shifted toward higher accuracy than AB (red)."}
 ggplot(participant_level, aes(x = mean_accuracy, fill = Condition, colour = Condition)) +
   geom_density(alpha = 0.35, linewidth = 1.1) +
   scale_fill_manual(values = condition_colours) +
@@ -325,9 +602,9 @@ ggplot(participant_level, aes(x = mean_accuracy, fill = Condition, colour = Cond
   brsm_theme
 ```
 
-**Figure 2 Interpretation:** NB peaks at ~88-90% accuracy; AB peaks at ~82-85%. NB is more concentrated at high accuracy values.
+**Interpretation:** NB peaks at ~88-90% accuracy; AB peaks at ~82-85%. NB is more concentrated at high accuracy values.
 
-```{r fig-violin-frametype, fig.height=2.3, fig.cap="Figure 3. Recognition accuracy by frame type. BB frames show higher accuracy than EM."}
+```{r fig-violin-frametype, fig.height=2.3, fig.cap="Recognition accuracy by frame type. BB frames show higher accuracy than EM."}
 ggplot(participant_frametype, aes(x = FrameType, y = mean_accuracy, fill = FrameType)) +
   geom_violin(alpha = 0.5, trim = FALSE, linewidth = 0.7) +
   geom_boxplot(width = 0.12, outlier.shape = NA, alpha = 0.85) +
@@ -341,11 +618,11 @@ ggplot(participant_frametype, aes(x = FrameType, y = mean_accuracy, fill = Frame
   brsm_theme + theme(legend.position = "none")
 ```
 
-**Figure 3 Interpretation:** BB frames (green) show higher median accuracy than EM frames (orange), confirming the Boundary Advantage Effect. BB: 85-92%; EM: 75-90%.
+**Interpretation:** BB frames (green) show higher median accuracy than EM frames (orange), confirming the Boundary Advantage Effect. BB: 85-92%; EM: 75-90%.
 
 ## Condition × Frame Type Interaction
 
-```{r fig-bars-ci, fig.height=2.3, fig.cap="Figure 4. Mean accuracy with 95% CI by Condition and Frame Type."}
+```{r fig-bars-ci, fig.height=2.3, fig.cap="Mean accuracy with 95% CI by Condition and Frame Type."}
 interaction_ci <- participant_frametype %>%
   group_by(Condition, FrameType) %>%
   summarise(N = n(), 
@@ -368,9 +645,9 @@ ggplot(interaction_ci, aes(x = FrameType, y = Mean, fill = Condition)) +
   brsm_theme
 ```
 
-**Figure 4:** NB exceeds AB for both frame types; largest difference for BB frames.
+**Interpretation:** NB exceeds AB for both frame types; largest difference for BB frames.
 
-```{r fig-heatmap, fig.height=2.2, fig.cap="Figure 5. Mean accuracy heatmap. Darker blue indicates higher accuracy."}
+```{r fig-heatmap, fig.height=2.2, fig.cap="Mean accuracy heatmap. Darker blue indicates higher accuracy."}
 interaction_means <- participant_frametype %>%
   group_by(Condition, FrameType) %>%
   summarise(Mean = mean(mean_accuracy, na.rm = TRUE), .groups = "drop")
@@ -386,7 +663,7 @@ ggplot(interaction_means, aes(x = FrameType, y = Condition, fill = Mean)) +
   brsm_theme
 ```
 
-**Figure 5:** NB-BB shows highest accuracy (89.9%); NB advantage persists for EM frames (86.2% vs 81.0%).
+**Interpretation:** NB-BB shows highest accuracy (89.9%); NB advantage persists for EM frames (86.2% vs 81.0%).
 
 ## Response Time Analysis
 
@@ -402,12 +679,10 @@ rt_summary <- participant_level %>%
 ```
 
 ```{r rt-table}
-knitr::kable(rt_summary, caption = "Table 4. Response Time by Condition")
+knitr::kable(rt_summary, caption = "Response Time by Condition")
 ```
 
 Response times did not differ significantly between conditions (see hypothesis tests below), suggesting that accuracy differences reflect genuine memory strength rather than speed-accuracy tradeoffs. Both groups responded at similar speeds, but NB participants made more accurate decisions within that time.
-
----
 
 # Hypothesis Testing and Statistical Inference
 
@@ -484,7 +759,7 @@ tibble(
   `Sig*` = ifelse(c(t1$p.value, t2$p.value, t3$p.value, t4$p.value) < alpha_adjusted, "Yes", "No"),
   `Cohen's d` = round(c(d1, d2, d3, d4), 2)
 ) %>%
-  knitr::kable(caption = "Table 5. Hypothesis Test Results (*Sig at Bonferroni-adjusted alpha = 0.0125)")
+  knitr::kable(caption = "Hypothesis Test Results (*Sig at Bonferroni-adjusted alpha = 0.0125)")
 ```
 
 ### Test 1: Overall Accuracy (Hypothesis 1)
@@ -530,8 +805,6 @@ Demographic tests use **unadjusted alpha = 0.05** (exploratory checks, not confi
 
 **D4: Gender as Moderator** — Female (M = `r round(mean(acc_female), 3)`) vs Male (M = `r round(mean(acc_male), 3)`): t(`r round(td4$parameter, 1)`) = `r round(td4$statistic, 2)`, p = `r round(td4$p.value, 3)`. Non-significant result confirms equivalent performance across genders.
 
----
-
 # Discussion and Implications
 
 ## Summary
@@ -542,27 +815,64 @@ This study supports Event Segmentation Theory. Disrupting natural boundaries (AB
 
 Results support EST's predictions: natural boundaries enhance memory consolidation through event model updating. When boundaries are disrupted, this updating is interrupted, weakening encoding. The unexpected EM frame effect suggests boundaries provide organizational structure benefiting entire event representations, not just boundary moments.
 
+### Event Model Updating Mechanism
+
+According to EST, event boundaries trigger the completion of the current event model and initiate a new model. This process involves:
+
+1. **Completion Phase:** The current event representation is finalized and consolidated into long-term memory. Frames near this completion point receive enhanced encoding.
+
+2. **Transition Phase:** Working memory is cleared and prepared for new incoming information. This neurophysiological reset creates a distinctive memory trace.
+
+3. **Initiation Phase:** A new event model begins, with increased attentional resources allocated to detect the nature of the new event.
+
+When boundaries are disrupted (AB condition), this three-phase process is interrupted mid-stream. Participants experience an incomplete event model followed by an abrupt cut, preventing proper consolidation.
+
+### Broader Implications for Memory Encoding
+
+The finding that EM frames (not just BB frames) showed impairment has important theoretical ramifications. It suggests that event boundaries do not merely enhance memory for boundary-adjacent moments, but rather provide a **structural scaffold** that organizes and strengthens the entire event representation. When this scaffold is disrupted, even frames distant from the boundary show degraded memory.
+
+This finding aligns with recent hierarchical event memory models proposing that boundaries segment experience into coherent chunks, and that disrupting chunk boundaries affects the entire chunk's memorability.
+
+### Practical Applications
+
+These findings have relevance for:
+
+- **Educational video design:** Preserving natural activity completions enhances learning and retention
+- **Media production:** Film editing techniques that respect event structure may improve audience comprehension and memory
+- **Eyewitness testimony:** Interruptions during event observation may systematically impair memory for critical details
+- **User interface design:** Task interruptions aligned with natural completion points minimize memory interference
+
 ## Limitations
 
 Predominantly male (69%), narrow age range (19-28 years), university sample limits generalizability. Recognition paradigm may underestimate true memory differences compared to free recall. Separate t-tests rather than mixed ANOVA; Bonferroni is conservative.
 
----
+### Methodological Considerations
+
+**Sample Composition:** The predominantly male, young adult, university sample restricts generalizability to broader populations. Future studies should recruit diverse age groups, educational backgrounds, and cultural contexts to establish boundary effects across the lifespan.
+
+**Recognition vs. Recall:** Two-alternative forced choice recognition may inflate accuracy estimates compared to free recall or cued recall paradigms. Boundary effects might be even stronger with more demanding retrieval tasks that place greater emphasis on event structure.
+
+**Statistical Approach:** Using separate t-tests rather than a mixed ANOVA sacrifices efficiency and power. However, this approach enhances interpretability and provides clear effect sizes for each comparison. Future analyses should implement mixed models to capture the full Condition × FrameType interaction structure.
 
 # Future Directions
 
 **Analyses Feasible with Current Data:** (1) Confidence ratings (Condition × FrameType effects; confidence-accuracy calibration); (2) RT by frame type; (3) Mixed ANOVA for Condition × FrameType interaction; (4) Item-level video effects (difficulty, duration, repetition); (5) Demographic moderators (Age × Condition, Gender × Condition); (6) Trial-level learning; (7) Error patterns; (8) Confidence-conditionalized accuracy.
 
-**Future Studies:** Broader samples diverse in age/gender/culture; different event types (narratives, social interactions); demanding memory tests (free recall); neuroimaging (fMRI/EEG); individual differences (working memory, segmentation ability).
+**Advanced Memory Metrics for Future Implementation:**
 
----
+- **Recognition Memory Index (REC):** Bias-corrected measure of target discrimination ability. Formula: REC = P("old" | Target) - P("old" | Foil). This would require adding novel (never-seen) items to the current paradigm, which only includes targets and lures.
+
+- **Lure Discrimination Index (LDI):** High-fidelity mnemonic discrimination measure. Formula: LDI = P("similar" | Lure) - P("similar" | Foil). Would require a 3-alternative response format ("old", "similar", "new") instead of the current 2-alternative forced choice, allowing participants to explicitly identify lures as "similar" rather than simply rejecting them.
+
+These signal-detection metrics would provide more sensitive measures by separating true memory strength from response bias, particularly valuable for comparing boundary vs. non-boundary frame discrimination.
+
+**Future Studies:** Broader samples diverse in age/gender/culture; different event types (narratives, social interactions); demanding memory tests (free recall); neuroimaging (fMRI/EEG); individual differences (working memory, segmentation ability); implementing 3-alternative recognition paradigm to compute REC and LDI metrics.
 
 # References
 
 Swallow, K. M., Zacks, J. M., & Abrams, R. A. (2009). Event boundaries in perception affect memory encoding and updating. *Journal of Experimental Psychology: General*, *138*(2), 236-257. https://doi.org/10.1037/a0015631
 
 Zacks, J. M., Speer, N. K., Swallow, K. M., Braver, T. S., & Reynolds, J. R. (2007). Event perception: A mind-brain perspective. *Psychological Bulletin*, *133*(2), 273-293. https://doi.org/10.1037/0033-2909.133.2.273
-
----
 
 # Individual Contributions
 

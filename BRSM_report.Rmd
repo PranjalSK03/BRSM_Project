@@ -62,6 +62,85 @@ raw_list <- map(csv_files, read_participant)
 raw_df   <- bind_rows(raw_list)
 ```
 
+## Encoding Time Exclusion
+
+```{r encoding-time-exclusion, include=FALSE}
+# Calculate encoding time for each participant
+# Encoding time = time between end of instructions (instruction_2.stopped) 
+# and start of recognition phase (recognition.started)
+
+encoding_times <- raw_df %>%
+  filter(!is.na(participant_id)) %>%
+  group_by(participant_id) %>%
+  summarise(
+    instruction_stopped = suppressWarnings(as.numeric(first(na.omit(`instruction_2.stopped`)))),
+    recognition_started = suppressWarnings(as.numeric(first(na.omit(`recognition.started`)))),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    encoding_time_sec = recognition_started - instruction_stopped,
+    encoding_time_min = encoding_time_sec / 60
+  )
+
+# Set threshold to 27.05 minutes (as per experimental protocol)
+encoding_threshold_min <- 27.05
+
+# Identify participants who exceeded the encoding time limit
+encoding_excluded_ids <- encoding_times %>%
+  filter(!is.na(encoding_time_min), encoding_time_min > encoding_threshold_min) %>%
+  pull(participant_id)
+
+n_encoding_excluded <- length(encoding_excluded_ids)
+n_total_loaded <- n_distinct(raw_df$participant_id)
+n_after_encoding <- n_total_loaded - n_encoding_excluded
+
+cat("\n=== ENCODING TIME EXCLUSION ===", "\n")
+cat("Total participants loaded:", n_total_loaded, "\n")
+cat("Encoding time threshold:", encoding_threshold_min, "minutes\n")
+cat("Participants excluded (encoding time >" , encoding_threshold_min, "min):", n_encoding_excluded, "\n")
+if (n_encoding_excluded > 0) {
+  cat("Excluded participant IDs:", paste(encoding_excluded_ids, collapse = ", "), "\n")
+  encoding_times %>% 
+    filter(participant_id %in% encoding_excluded_ids) %>%
+    select(participant_id, encoding_time_min) %>%
+    print()
+}
+cat("Participants retained:", n_after_encoding, "\n")
+cat("\n")
+
+# Apply encoding time exclusion
+raw_df <- raw_df %>% filter(!participant_id %in% encoding_excluded_ids)
+```
+
+```{r encoding-exclusion-table}
+tibble(
+  Stage = c(
+    "Initial N (files loaded into master dataframe)",
+    paste0("Excluded - encoding time > ", encoding_threshold_min, " min"),
+    "Final N for analysis"
+  ),
+  Count = c(
+    n_total_loaded,
+    n_encoding_excluded,
+    n_after_encoding
+  )
+) %>% knitr::kable()
+```
+
+**Encoding Time Exclusion Rationale:** Participants who took longer than 27.05 minutes between the end of video-watching instructions and the start of the recognition phase were excluded. Excessive delays suggest interruptions, technical issues, or anomalous session behavior that could compromise data quality. This window captures the complete 40-video encoding phase plus transition time.
+
+```{r encoding-excluded-details}
+if (n_encoding_excluded > 0) {
+  encoding_times %>%
+    filter(participant_id %in% encoding_excluded_ids) %>%
+    mutate(encoding_time_min = round(encoding_time_min, 1)) %>%
+    select(`Participant` = participant_id, `Encoding Time (min)` = encoding_time_min) %>%
+    knitr::kable(
+      caption = "Participants excluded due to excessive encoding time"
+    )
+}
+```
+
 ---
 
 # Introduction
@@ -115,7 +194,7 @@ This means **p-values must be < 0.0125** (not 0.05) to be considered statistical
 
 # Data Cleaning and Preprocessing
 
-## Participant Exclusion
+## Trial Count Exclusion
 
 ```{r participant-exclusion, include=FALSE}
 trial_counts <- raw_df %>%
@@ -125,29 +204,39 @@ trial_counts <- raw_df %>%
 
 excluded_ids <- trial_counts %>% filter(n_rows < 20) %>% pull(participant_id)
 n_excluded   <- length(excluded_ids)
-n_total      <- n_distinct(raw_df$participant_id)
-n_included   <- n_total - n_excluded
+n_total_after_encoding      <- n_distinct(raw_df$participant_id)
+n_included   <- n_total_after_encoding - n_excluded
 
-cat("Total participants loaded:", n_total, "\n")
-cat("Participants excluded (< 20 rows):", n_excluded, "\n")
+cat("\n=== TRIAL COUNT EXCLUSION ===", "\n")
+cat("Participants after encoding time filter:", n_total_after_encoding, "\n")
+cat("Participants excluded (< 20 valid trials):", n_excluded, "\n")
 cat("Participants retained:", n_included, "\n")
+cat("\n")
 ```
 
 ```{r filter-participants, include=FALSE}
 clean_df <- raw_df %>% filter(!participant_id %in% excluded_ids)
 ```
 
-Each participant contributed one CSV file. A participant was excluded if their file contained fewer than 20 recognisable data rows, which would indicate an incomplete or corrupted recording session.
+Each participant contributed one CSV file. After encoding time exclusion, participants were further excluded if their file contained fewer than 20 recognisable data rows, which would indicate an incomplete or corrupted recognition phase session.
 
 ```{r exclusion-table}
 tibble(
-  `Processing Stage`           = c(
+  `Processing Stage` = c(
     "Participant CSV files loaded",
-    "Participants excluded (fewer than 20 valid data rows)",
-    "Participants retained for analysis"
+    paste0("Excluded - encoding time > ", encoding_threshold_min, " min"),
+    "After encoding time filter",
+    "Excluded - fewer than 20 valid data rows",  
+    "Final participant count for analysis"
   ),
-  `Number of Participants` = c(n_total, n_excluded, n_included)
-)
+  `Number of Participants` = c(
+    n_total_loaded, 
+    n_encoding_excluded,
+    n_after_encoding,
+    n_excluded, 
+    n_included
+  )
+) %>% knitr::kable()
 ```
 
 ## Variable Derivation
@@ -171,50 +260,80 @@ trial_df <- clean_df %>%
   filter(!is.na(Accuracy), !is.na(Condition), !is.na(FrameType)) %>%
   select(participant_id, Condition, FrameType, movie_id = movie_id_num, Accuracy, RT, Confidence)
 
+n_trials_before_rt <- nrow(trial_df)
 rt_mean       <- mean(trial_df$RT, na.rm = TRUE)
 rt_sd         <- sd(trial_df$RT,   na.rm = TRUE)
 rt_cutoff     <- rt_mean + 3 * rt_sd
 n_rt_outliers <- sum(!is.na(trial_df$RT) & trial_df$RT > rt_cutoff)
 n_below_200ms <- sum(!is.na(trial_df$RT) & trial_df$RT < 0.2)
-n_na_removed  <- nrow(clean_df) - nrow(clean_df %>% filter(!is.na(movie_id), !is.na(`resp.corr`)))
 
+cat(sprintf("\n=== RT OUTLIER REMOVAL ===\n"))
+cat(sprintf("Trials with RT < 200 ms (implausibly fast): %d\n", n_below_200ms))
 cat(sprintf("RT mean = %.0f ms, SD = %.0f ms\n", rt_mean * 1000, rt_sd * 1000))
 cat(sprintf("Mean + 3SD cutoff = %.0f ms\n", rt_cutoff * 1000))
-cat(sprintf("Trials with RT < 200 ms: %d\n", n_below_200ms))
-cat(sprintf("Trials removed (RT > Mean+3SD): %d (%.1f%%)\n", n_rt_outliers, 100 * n_rt_outliers / nrow(trial_df)))
+cat(sprintf("Trials removed (RT > Mean+3SD): %d (%.1f%%)\n", n_rt_outliers, 100 * n_rt_outliers / n_trials_before_rt))
 
 trial_df <- trial_df %>% filter(is.na(RT) | RT <= rt_cutoff)
-cat("Final trial count:", nrow(trial_df), "\n")
-cat("Final participant count:", n_distinct(trial_df$participant_id), "\n")
+cat("Final trial count after RT filter:", nrow(trial_df), "\n")
+cat("Final participant count:", n_distinct(trial_df$participant_id), "\n\n")
+```
+
+### RT Outlier Removal Details
+
+```{r rt-statistics-table}
+tibble(
+  Statistic = c(
+    "Trials with RT < 200 ms (implausibly fast)",
+    "RT mean",
+    "RT SD", 
+    "Mean + 3SD cutoff",
+    "Trials removed (RT > Mean+3SD)",
+    "Final trial count after RT filter",
+    "Final participant count"
+  ),
+  Value = c(
+    paste0(n_below_200ms),
+    paste0(round(rt_mean * 1000), " ms"),
+    paste0(round(rt_sd * 1000), " ms"),
+    paste0(round(rt_cutoff * 1000), " ms"),
+    paste0(n_rt_outliers, " (", round(100 * n_rt_outliers / n_trials_before_rt, 1), "%)"),
+    nrow(trial_df),
+    n_distinct(trial_df$participant_id)
+  )
+) %>% knitr::kable()
 ```
 
 The table below tracks how many trials were removed at each cleaning step. Only rows with a valid `movie_id` (1–40), a recorded response, and a response time within three standard deviations of the mean were kept.
 
 ```{r trial-exclusion-table}
+n_after_participant <- nrow(clean_df)
+n_initial_trials <- n_trials_before_rt
+n_na_removed <- n_after_participant - n_initial_trials
+
 tibble(
-  `Cleaning Stage` = c(
-    "Total data rows after participant exclusion",
-    "Rows removed — missing movie ID or missing response",
-    "Valid recognition trials remaining (movie IDs 1–40)",
-    "Trials with response time below 200 ms (too fast — none found)",
-    "Trials removed — response time exceeded Mean + 3 SD cutoff",
-    "Final trial count used in all analyses"
+  Stage = c(
+    "Total rows in loaded data (after participant exclusion)",
+    "Rows removed - NA in movie_id or resp.corr (non-trial rows)",
+    "Remaining recognition trials (movie_id 1-40)",
+    "Trials with RT < 200 ms (implausibly fast) - none found",
+    paste0("Trials excluded - RT > Mean+3SD (> ", round(rt_cutoff * 1000), " ms)"),
+    "Final trial count for analysis"
   ),
-  `Number of Trials` = c(
-    nrow(trial_df) + n_rt_outliers + n_na_removed,
+  Count = c(
+    n_after_participant,
     n_na_removed,
-    nrow(trial_df) + n_rt_outliers,
-    0,
+    n_initial_trials,
+    n_below_200ms,
     n_rt_outliers,
     nrow(trial_df)
   )
-)
+) %>% knitr::kable()
 ```
 
 ## Load Demographic Data
 
 ```{r load-demographics, include=FALSE}
-demo_df <- read_excel("Demographic data.xlsx") %>%
+demo_df <- read_excel("BRSM data csv/Demographic data.xlsx") %>%
   rename(raw_id = `Sub ID`) %>%
   mutate(
     raw_id        = str_trim(str_to_lower(raw_id)),

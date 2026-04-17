@@ -203,24 +203,46 @@ Raw data from PsychoPy experiments often contains:
 - Missing values from incomplete trials
 - Extreme outliers from accidental key presses or inattention
 - Redundant columns from experimental software
+- Session timing anomalies (excessive delays between phases)
 
-### Cleaning Pipeline (6 Steps)
+### Cleaning Pipeline (7 Steps)
 
-#### Step 1: Participant Exclusion
+#### Step 1: Encoding Time Exclusion
+
+**Decision:** Exclude participants with encoding time > 27.05 minutes
+
+**Encoding Time Calculation:**
+- Encoding time = time between end of video-watching instructions (`instruction_2.stopped`) and start of recognition phase (`recognition.started`)
+- This window captures the complete 40-video encoding phase plus transition time
+
+**Rationale:**
+- Excessive delays (> 27.05 min) suggest interruptions, technical issues, or anomalous session behavior
+- Such delays could compromise memory encoding through:
+  - Divided attention during interruptions
+  - Abnormal consolidation periods
+  - Unmeasured external factors affecting performance
+- Ensures data quality by removing sessions that deviated substantially from experimental protocol
+- 27.05 minute threshold allows for normal individual differences while capturing extreme outliers
+
+**Result:** ~5 participants excluded (varies by dataset version)
+
+---
+
+#### Step 2: Trial Count Exclusion
 
 **Decision:** Exclude participants with < 20 valid data rows
 
 **Rationale:**
 - 40 trials expected per participant
-- < 20 rows suggests incomplete session, software crash, or data corruption
-- Ensures reliable mean estimates per participant
+- < 20 rows suggests incomplete recognition phase, software crash, or data corruption
+- Ensures reliable mean estimates per participant (at least 50% of expected trials)
 - Prevents pseudoreplication from partially complete data
 
-**Result:** 163 participants retained, 22 excluded
+**Result:** 163 participants retained, 22 total excluded (including encoding time exclusions)
 
 ---
 
-#### Step 2: Variable Type Conversion
+#### Step 3: Variable Type Conversion
 
 **Actions:**
 - Extracted `Condition` from filename (case-insensitive regex: `sub[0-9]+_[NB|AB]`)
@@ -235,7 +257,7 @@ Raw data from PsychoPy experiments often contains:
 
 ---
 
-#### Step 3: Frame Type Derivation
+#### Step 4: Frame Type Derivation
 
 **Decision:** Classify frame type based on `target_img` filename
 
@@ -251,7 +273,7 @@ Raw data from PsychoPy experiments often contains:
 
 ---
 
-#### Step 4: Response Time Outlier Removal
+#### Step 5: Response Time Outlier Removal
 
 **Decision:** Remove RT observations > Mean + 3 SD
 
@@ -274,7 +296,7 @@ Raw data from PsychoPy experiments often contains:
 
 ---
 
-#### Step 5: Missing Data Handling
+#### Step 6: Missing Data Handling
 
 **Decision:** Listwise deletion on critical variables (Accuracy, Condition, FrameType)
 
@@ -289,7 +311,7 @@ Raw data from PsychoPy experiments often contains:
 
 ---
 
-#### Step 6: Aggregation to Participant-Level
+#### Step 7: Aggregation to Participant-Level
 
 **Decision:** Aggregate trial-level data to participant means
 
